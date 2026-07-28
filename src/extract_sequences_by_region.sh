@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  extract_sequences_by_region.sh -f reference.fa -r regions.txt -o output.fa
+  extract_sequences_by_region.sh -f reference.fa -r regions.txt -o output.fa -p prefix
 
 Description:
   Extract sequences from a FASTA file using a region file with one region per line:
@@ -14,13 +14,15 @@ Options:
   -f FILE   Reference FASTA file.
   -r FILE   Region file, using 1-based inclusive coordinates.
   -o FILE   Output FASTA file. The filename can be chosen freely.
+  -p PREFIX Prefix for one-sequence FASTA files. May include a directory.
   -h        Show this help message.
 
 Example:
   extract_sequences_by_region.sh \
     -f reference.fa \
     -r kmer_intersect/TraesCS5A03G0935400/S4185_region.txt \
-    -o S4185_TraesCS5A03G0935400.fa
+    -o S4185_TraesCS5A03G0935400.fa \
+    -p split/S4185_TraesCS5A03G0935400
 
   # Set SAMTOOLS_BIN when samtools is not in PATH:
   SAMTOOLS_BIN=/path/to/samtools extract_sequences_by_region.sh \
@@ -31,12 +33,14 @@ EOF
 reference_fasta=""
 region_file=""
 output_file=""
+split_prefix=""
 
-while getopts ":f:r:o:h" opt; do
+while getopts ":f:r:o:p:h" opt; do
     case "$opt" in
         f) reference_fasta="$OPTARG" ;;
         r) region_file="$OPTARG" ;;
         o) output_file="$OPTARG" ;;
+        p) split_prefix="$OPTARG" ;;
         h)
             usage
             exit 0
@@ -54,8 +58,8 @@ while getopts ":f:r:o:h" opt; do
     esac
 done
 
-if [[ -z "$reference_fasta" || -z "$region_file" || -z "$output_file" ]]; then
-    echo "Error: -f, -r and -o are required." >&2
+if [[ -z "$reference_fasta" || -z "$region_file" || -z "$output_file" || -z "$split_prefix" ]]; then
+    echo "Error: -f, -r, -o and -p are required." >&2
     usage >&2
     exit 2
 fi
@@ -83,9 +87,61 @@ if [[ ! -d "$output_dir" ]]; then
     exit 1
 fi
 
+split_dir="$(dirname -- "$split_prefix")"
+if [[ ! -d "$split_dir" ]]; then
+    echo "Error: split output directory does not exist: $split_dir" >&2
+    exit 1
+fi
+
 "$samtools_bin" faidx \
     -r "$region_file" \
     -o "$output_file" \
     "$reference_fasta"
 
+awk -v split_prefix="$split_prefix" '
+function write_header(line, file) {
+    if (!(file in seen)) {
+        print line > file
+        seen[file] = 1
+    } else {
+        print line >> file
+    }
+}
+
+/^>/ {
+    if (current_file != "") {
+        close(current_file)
+    }
+
+    header = substr($0, 2)
+    coordinates = header
+    sub(/^.*:/, "", coordinates)
+    chromosome = header
+    sub(/:[^:]*$/, "", chromosome)
+
+    if (chromosome == "" || coordinates !~ /^[0-9]+-[0-9]+$/) {
+        exit 1
+    }
+
+    split(coordinates, bounds, "-")
+    current_file = split_prefix "_" chromosome "_" bounds[1] "_" bounds[2] ".fasta"
+    write_header($0, current_file)
+    next
+}
+
+{
+    if (current_file == "") {
+        exit 1
+    }
+    print >> current_file
+}
+
+END {
+    if (current_file != "") {
+        close(current_file)
+    }
+}
+' "$output_file"
+
 echo "Extracted sequences written to: $output_file"
+echo "Split sequences written with prefix: $split_prefix"
