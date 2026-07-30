@@ -94,7 +94,7 @@ if ! command -v "$KMC_TOOLS" >/dev/null 2>&1; then
   exit 1
 fi
 
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d "${kmc_dir%/}/.kmc_union_tmp.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$(dirname "$out")"
@@ -128,11 +128,16 @@ for db in "${dbs[@]}"; do
 done
 
 acc="${dbs[0]}"
+acc_is_tmp=false
 
 for i in $(seq 1 $((${#dbs[@]} - 1))); do
   next="$tmpdir/union_${i}.k31"
   "$KMC_TOOLS" simple "$acc" "${dbs[$i]}" union "$next"
+  if [[ "$acc_is_tmp" == true ]]; then
+    rm -f "${acc}.kmc_pre" "${acc}.kmc_suf"
+  fi
   acc="$next"
+  acc_is_tmp=true
 done
 
 cp "${acc}.kmc_pre" "${out}.kmc_pre"
