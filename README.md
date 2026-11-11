@@ -8,13 +8,11 @@ For a target copy group `T`, define:
 
 ```text
 target_shared = intersection of k-mers across every copy in the target group
-background = union of k-mers from masked genomes ∪ union of k-mers from non-target copies
-target_specific = target_shared - background
+S(target,j) = shared k-mers with target hits and no off-target hits in reference j
+target_specific = intersection of S(target,j) across all reference genomes
 ```
 
-All candidate copies are masked once at the reference-genome level before building the masked-base-genome background database. Consequently, changing the target group requires recalculating only intersections, unions, and differences among the small copy databases; the whole genome does not need to be masked again. The shared k-mers of the target group can be counted in resequencing reads, with the depth of single-copy markers used as the one-copy reference.
-
-For more complete definitions and caveats for batch k-mer set operations, see `README_WGS_multi_copy_batch_kmer_copy_number.md` in the repository root. For negative-binomial (NB) copy-number calling of target genes and single-copy markers, see `docs/nb-copy-number-estimation-method.md`.
+Map to complete, unmasked references using Bowtie1 `-f -S -v 0 -a`. Every full alignment interval must lie inside one region belonging to the query target. KMC intersections across target copies remain unchanged.
 
 ## Dependencies
 
@@ -24,7 +22,7 @@ The following software is required:
 | --- | --- |
 | `miniprot` | Search for candidate gene copies using protein sequences |
 | `samtools` | Extract FASTA sequences by genomic region |
-| `bedtools` | Mask candidate regions with `N` |
+| `Bowtie1` (`bowtie`, `bowtie-build`) | Exact all-hit mapping and reference indexing |
 | `KMC3` (`kmc`, `kmc_tools`) | Build k-mer databases and perform set operations |
 | `bash`, `awk`, `python3` | Run helper scripts and filter panels |
 
@@ -33,7 +31,8 @@ All scripts support `-h/--help`. If a program is not on `PATH`, override its loc
 ```bash
 export MINIPROT_BIN=/path/to/miniprot
 export SAMTOOLS_BIN=/path/to/samtools
-export BEDTOOLS=/path/to/bedtools
+export BOWTIE_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie
+export BOWTIE_BUILD_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie-build
 export KMC_TOOLS_BIN=/path/to/kmc_tools
 ```
 
@@ -62,7 +61,7 @@ Chr7B:10025677-10026934
 Chr7B:10038024-10039281
 ```
 
-The masking script converts these coordinates automatically to BED's 0-based, half-open format. Regions must cover each complete candidate copy; an omitted copy region incorrectly leaves its target sequence in the background.
+These region files are used for sequence extraction. Bowtie filtering uses the target/genome-specific region table below. Include all target copies in each reference; omitted target copies cause their hits to be classified as off-target.
 
 ### Copy-group table
 
@@ -118,40 +117,11 @@ Add the paths of these split FASTA files to `all_candidate_copy_list.tsv`.
 
 ## Build k-mer databases
 
-### 1. Mask all candidate regions once
-
-For each reference genome, use a region file containing all candidate copies:
-
-```bash
-mkdir -p masked_base_genome
-
-bash src/mask_fasta_regions.sh \
-  -g /data/genome/CS.fa \
-  -r regions/CS.all_candidate_copies.txt \
-  -o masked_base_genome/CS.all_candidate_copies_masked.fa
-```
-
-### 2. Build masked-base-genome KMC databases and take their union
+### Build one database for each candidate copy
 
 ```bash
 mkdir -p kmc_batch_db kmc_batch_tmp
-
-kmc -k31 -ci1 -fm -t16 \
-  masked_base_genome/CS.all_candidate_copies_masked.fa \
-  kmc_batch_db/CS.base_masked.k31 kmc_batch_tmp
-
-kmc -k31 -ci1 -fm -t16 \
-  masked_base_genome/JM47.all_candidate_copies_masked.fa \
-  kmc_batch_db/JM47.base_masked.k31 kmc_batch_tmp
-
-bash src/batch_kmc_union.sh \
-  -i kmc_batch_db \
-  -o kmc_batch_db/base_background_all.k31
 ```
-
-`batch_kmc_union.sh` reads every `*.kmc_pre`/`*.kmc_suf` pair in the input directory and writes a KMC database plus the dump table `base_background_all.k31.tsv`. Do not place the output database in an input directory that will be scanned again, or use a distinct output prefix to prevent it from being included twice.
-
-### 3. Build one database for each candidate copy
 
 ```bash
 while IFS=$'\t' read -r copy_id sample group fasta; do
@@ -199,28 +169,45 @@ kmc_tools simple \
   intersect target_7B_kmc/TaFTB1_7B.target_shared.k31
 ```
 
-### Non-target-copy background and set difference
+### Batch shared-specific filtering with Bowtie1
 
-For multiple target genes, use `build_copy_background.sh` to create an “all other genes/copies union + base background” for each target:
+Prepare three **tab-separated** tables (replace displayed spaces with tabs). Paths are relative to each manifest directory. Supply one row per target and the two-column KMC intersection dump; all targets must use the same k.
 
-```bash
-bash src/build_copy_background.sh \
-  -g multi_copy_gene.txt \
-  -d kmer_intersect \
-  -b kmc_batch_db/base_background_all.k31 \
-  -o copy_background_kmc \
-  -t 32
+`targets.tsv`:
+
+```text
+target_id shared_tsv
+TaFTB1_7B target_7B_kmc/TaFTB1_7B.target_shared.k31.tsv
 ```
 
-`kmer_intersect/<gene>/kmc_db/` must contain one KMC database for every copy of that gene. For the set difference of one target group, use:
+`references.tsv`:
+
+```text
+genome_id fasta index_prefix
+CS /data/genome/CS.fa /data/bowtie_index/CS
+JM47 /data/genome/JM47.fa /data/bowtie_index/JM47
+```
+
+`target_regions.tsv`:
+
+```text
+target_id genome_id reference_name start end coordinate_system
+TaFTB1_7B CS Chr7B 10013330 10014587 1-based-closed
+TaFTB1_7B CS Chr7B 10025677 10026934 1-based-closed
+TaFTB1_7B JM47 Chr7B 20000 21500 1-based-closed
+```
+
+Replace example coordinates with all actual target-copy intervals in each reference. Supported coordinate systems: `1-based-closed` and `0-based-half-open`. Chromosome names must match the reference; every target/reference pair requires regions. Complete Bowtie1 `.ebwt` or `.ebwtl` indexes are reused; missing indexes are built. A blank `index_prefix` field builds under the output directory.
 
 ```bash
-bash src/kmc_subtract_dump.sh \
-  --tsv target_7B_kmc/TaFTB1_7B.target_specific.tsv \
-  target_7B_kmc/TaFTB1_7B.target_shared.k31 \
-  copy_background_kmc/TaFTB1_7B.background.k31 \
-  target_7B_kmc/TaFTB1_7B.target_specific.k31
+python3 src/bowtie_shared_specific.py \
+  --targets targets.tsv \
+  --references references.tsv \
+  --regions target_regions.tsv \
+  --out-dir bowtie_specific -t 16
 ```
+
+Outputs are `bowtie_specific/<target>.shared-specific.tsv` (headerless `kmer count`, preserving input counts) and FASTA, ready for QC below. `classification.tsv` reports `target_only`, `non_target_only`, `mixed`, and `unmapped` status plus retention per reference. `<genome>.hits.tsv` records every alignment with 0-based half-open coordinates and strand. `summary.tsv` reports counts; `SUCCESS` marks completion across all references. Failed output directories are not final results. Use a new output directory for every run. SAM files are removed after successful parsing unless `--keep-sam` is set. Unmapped queries are excluded; multiple target-only hits are allowed. Masking/background/subtraction scripts remain for legacy use only.
 
 ### Panel quality filtering
 
@@ -228,7 +215,7 @@ Filter the KMC dump table into a TSV and FASTA panel suitable for read counting:
 
 ```bash
 python3 src/filter_target_specific_kmers.py \
-  target_7B_kmc/TaFTB1_7B.target_specific.tsv \
+  bowtie_specific/TaFTB1_7B.shared-specific.tsv \
   --out-prefix target_7B_kmc/TaFTB1_7B.panel \
   --anchor-fasta test/TaFT-B1.fasta \
   --min-spacing 10 \
@@ -345,11 +332,12 @@ For NB input formats, output columns, and model details, see `../docs/nb-copy-nu
 | --- | --- |
 | `src/run_miniport.sh` | Build a miniprot index and generate a GFF for one accession |
 | `src/extract_sequences_by_region.sh` | Extract a combined FASTA and split copy FASTA files by region |
-| `src/mask_fasta_regions.sh` | Mask candidate regions with `N` |
+| `src/mask_fasta_regions.sh` | Legacy: Mask candidate regions with `N` |
 | `src/batch_kmc_union.sh` | Take the union of KMC databases in an input directory |
 | `src/batch_kmc_inter.sh` | Take the intersection of KMC databases in an input directory |
-| `src/build_copy_background.sh` | Build the non-target-copy background and complete background |
-| `src/kmc_subtract_dump.sh` | Calculate a KMC set difference and export a TSV |
+| `src/build_copy_background.sh` | Legacy: Build the non-target-copy background and complete background |
+| `src/kmc_subtract_dump.sh` | Legacy: Calculate a KMC set difference and export a TSV |
+| `src/bowtie_shared_specific.py` | Bowtie1 shared-specific panel construction |
 | `src/filter_target_specific_kmers.py` | Filter k-mers and write panel TSV/FASTA files |
 | `src/estimate_depth_from_realcount_nb.py` | Estimate marker NB parameters and joint single-copy depth |
 | `src/estimate_copy_from_realcount_depth.sh` | Estimate integer and continuous copy numbers from target counts and single-copy depth |
@@ -358,11 +346,9 @@ For NB input formats, output columns, and model details, see `../docs/nb-copy-nu
 
 - A KMC database consists of `.kmc_pre` and `.kmc_suf` files; always move or copy them together.
 - The input for target shared k-mers must contain only the current target group. Do not put all copy databases directly in one intersection directory.
-- The base background must come from genomes with all candidate copies masked. Do not subtract target-copy k-mers directly from the full genome.
-- The more complete the candidate-copy set `C_all`, the more reliable the non-target background. Unannotated copies increase the number of falsely specific k-mers.
 - Validate k-mer panels using independent accessions or read datasets. Flag low-depth samples and copy estimates near half-integers as low confidence.
 - The scripts in this directory handle candidate regions and k-mer-panel construction only. NB copy-number statistics scripts and tests are located in the repository root.
 
 ## Test data
 
-`test/TaFT-B1.fasta` is the anchor FASTA used by `filter_target_specific_kmers.py` to annotate k-mer positions in panel output and to apply `--min-spacing` thinning. It is not a complete reference genome and cannot be used as the `-f` input to `extract_sequences_by_region.sh`. `test/` also contains protein sequences, region lists, and sample/accession lists that can be used to check input formats. Before running the workflow, ensure that `samtools`, `bedtools`, `kmc`, `kmc_tools`, and `miniprot` are installed, and adjust commands for local paths as needed.
+`test/TaFT-B1.fasta` is the anchor FASTA used by `filter_target_specific_kmers.py` to annotate k-mer positions in panel output and to apply `--min-spacing` thinning. It is not a complete reference genome and cannot be used as the `-f` input to `extract_sequences_by_region.sh`. `test/` also contains protein sequences, region lists, and sample/accession lists that can be used to check input formats. Before running the workflow, ensure that `samtools`, `bowtie`, `bowtie-build`, `kmc`, `kmc_tools`, and `miniprot` are installed, and adjust commands for local paths as needed.

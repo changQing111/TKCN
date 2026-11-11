@@ -1,0 +1,3 @@
+Edge checks passed: reverse complements, ambiguous windows, within-copy duplicates, multiline FASTA, rejection of multiple records.
+Existing per-copy KMC files: 48; bytes: 31517856.
+Measured memory run: process wall time 0.33 seconds; peak RSS 10972 KiB. No KMC runtime speedup claim: historical KMC time was not measured.

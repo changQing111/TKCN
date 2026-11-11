@@ -1,0 +1,116 @@
+{
+  "target_id": "AboA1.Abo1A487400",
+  "k": 31,
+  "copy_count": 24,
+  "shared_kmers": 208,
+  "input_bytes": 8784,
+  "compute_seconds": 0.09164722985588014,
+  "inputs": [
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/AMN_sequence_Chr1A_548968680_548969012.fasta",
+      "sha256": "3e419bdb2cb51df80c949bca547c1976332af7fd63f0b2be0dfc9b6c7cade944"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/Abo_sequence_Chr1A_551383115_551383447.fasta",
+      "sha256": "7ae26fad9b6b454460256931564736798ac353b411d9a8e489984338b0879e54"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/Abo_sequence_Chr1A_551407054_551407386.fasta",
+      "sha256": "ea821ab660a795c95fdd15adc1d5c59953d266514426af7b8dd0bdaf4a564380"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/BJ8_sequence_Chr1A_563967184_563967516.fasta",
+      "sha256": "725e7acaccc022a5d368f1957f0b724c99be706c971e66a3a72b4f73a3849532"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/CM42_sequence_Chr1A_549085825_549086157.fasta",
+      "sha256": "6933065422b4703c18dc584b46e8fd77389a63389a1e8ed9a93ce26f1c754a91"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/CM42_sequence_Chr1A_549109764_549110096.fasta",
+      "sha256": "c2bc126675325b06094bd44b8cd3f315271eae33f01a781a18f6bdec2c82d132"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/CS_sequence_Chr1A_546477305_546477637.fasta",
+      "sha256": "aef03672b8fef58e326ccee6d3d449dd87ac482c5ff0ad275c645bcf4d786acc"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/HD6172_sequence_Chr1A_555566981_555567313.fasta",
+      "sha256": "89997708f5f79559cc86bbfbd15d549a38ae8f979ce6602e684edc01f99b6ab7"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/HD6172_sequence_Chr1A_555590920_555591252.fasta",
+      "sha256": "e51fa2b743e9ede532d14dd9891087e74ba1e53a4e06eeea4320120b0184834b"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/JM22_sequence_Chr1A_547654501_547654833.fasta",
+      "sha256": "2f008a5acccbde1a8818c2009d49b9e4b34f19f3ae7a96363f6eb2a2c854d9c7"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/JM47_sequence_Chr1A_559470492_559470824.fasta",
+      "sha256": "18c8b785e6551c33b4c2ed186faae8229a3d05a5a271a5661b28321107871850"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/KF11_sequence_Chr1A_549910575_549910907.fasta",
+      "sha256": "d09a38aa248bc338d2e91880df20b93a9cf9fe3004c384dc11a5a438d0e3af09"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/MZM_sequence_Chr1A_551315525_551315857.fasta",
+      "sha256": "115df4eb1359a6170af7a78d0125e5362e47c8d17b6fe39fe424d6334cb680f3"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/NC4_sequence_Chr1A_544328451_544328783.fasta",
+      "sha256": "febc0fd3c3d522ca47709be826315bad2d3e3019626f1c36e80a984aa594b382"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/S4185_sequence_Chr1A_551286280_551286612.fasta",
+      "sha256": "a5bdb68bef946505bf32d514c5712d97cde3ad7b7a517a85b298b4e489a707a3"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/XN6028_sequence_Chr1A_547034163_547034495.fasta",
+      "sha256": "c03f35219ed73be2d9105d7fe520d119f57f7af829e4f5fef489cf25ba1e01b1"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/XN6028_sequence_Chr1A_547058102_547058434.fasta",
+      "sha256": "868714c9e5999a24d23580afc66b097e795961628e23861a8a16fe95d26f855b"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/XY6_sequence_Chr1A_546747487_546747819.fasta",
+      "sha256": "198ee48fff31028d0354a7ada93caa162239bd85da884a73c8e43bf1d6b8aea7"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/YM158_sequence_Chr1A_553661763_553662095.fasta",
+      "sha256": "927b2062f0cf47754c79593160c6fa9d1e8ea9bc2ce9e8ebb60c5ebf5e1a1fc6"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/YM158_sequence_Chr1A_553685702_553686034.fasta",
+      "sha256": "a63a1648597b5041dcaffe97e68b00b224ddee373fc3f27f6e8b10524a7f33a5"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/ZM16_sequence_Chr1A_552563525_552563857.fasta",
+      "sha256": "3c67547f7b96ebe491993c17f3165ff0d7890584e5fced6947aec670d8f7adfb"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/ZM16_sequence_Chr1A_552587464_552587796.fasta",
+      "sha256": "29a14947f949fd00f5e6aa22a555e4e8fe1de4d2fba8e34ab3f6fe5c4f98cd9b"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/ZM22_sequence_Chr1A_550761104_550761436.fasta",
+      "sha256": "0d4dd27bb0e402947c2c50e942a98d3e0c8e9b5e00f34daecc5125b5c9d00e7c"
+    },
+    {
+      "path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/ZM366_sequence_Chr1A_551090280_551090612.fasta",
+      "sha256": "57225ec1fcbdc889b2d5abcae2391acbc024236b35b90450194a7b0530313031"
+    }
+  ],
+  "output_count_policy": "presence only; count column set to 1",
+  "reference_path": "/data/changq/Project/all_copy_number_var/last_gene_copy/AboA1.Abo1A487400/inter_kmc/AboA1.Abo1A487400_shared.k31.tsv",
+  "reference_kmers": 208,
+  "reference_sha256": "f39eaf963d603e9310bba47ab657ee0a65ce003e7494f38a23a9bfeb93078576",
+  "only_in_kmc": 0,
+  "only_in_memory": 0,
+  "sets_equal": true,
+  "count_columns_equal": true,
+  "total_seconds_including_comparison": 0.11588899185881019,
+  "peak_rss_kib_linux": 10940
+}

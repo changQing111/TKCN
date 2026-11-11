@@ -10,13 +10,11 @@ TKCN（Targeted K-mer Copy Number Profiling，靶向 k-mer 拷贝数分析）使
 
 ```text
 target_shared = 目标组中所有拷贝的 k-mer 交集
-background = 已屏蔽基因组的 k-mer 并集 ∪ 非目标拷贝的 k-mer 并集
-target_specific = target_shared - background
+S(target,j) = 在参考 j 中至少命中一个目标区域，且无任何非目标命中的 shared k-mer
+target_specific = intersection of S(target,j) across all reference genomes
 ```
 
-在构建屏蔽后的基础基因组背景数据库之前，先在参考基因组层面一次性屏蔽所有候选拷贝。因此，更换目标组时，只需重新计算各个小型拷贝数据库之间的交集、并集和差集，无需再次屏蔽整个基因组。随后可在重测序 reads 中统计目标组共有 k-mer 的深度，并以单拷贝标记的深度作为一份拷贝的参考深度。
-
-本文档包含 TKCN 流程所需的操作说明；NB 模型的输入和输出字段也在下文说明。
+使用 Bowtie1 `-f -S -v 0 -a` 对未屏蔽的完整参考基因组进行全部精确命中比对；每次命中的完整区间必须位于同一目标的某个区域内。目标组共有 k-mer 的 KMC 交集步骤保持不变。
 
 ## 依赖软件
 
@@ -26,7 +24,7 @@ target_specific = target_shared - background
 | --- | --- |
 | `miniprot` | 使用蛋白质序列搜索候选基因拷贝 |
 | `samtools` | 按基因组区域提取 FASTA 序列 |
-| `bedtools` | 使用 `N` 屏蔽候选区域 |
+| `Bowtie1` (`bowtie`, `bowtie-build`) | 全命中精确比对和参考索引 |
 | `KMC3`（`kmc`、`kmc_tools`） | 构建 k-mer 数据库并执行集合运算 |
 | `bash`、GNU `awk`、`python3`、`SciPy` | 运行辅助脚本、NB 模型和 panel 过滤 |
 
@@ -35,7 +33,8 @@ target_specific = target_shared - background
 ```bash
 export MINIPROT_BIN=/path/to/miniprot
 export SAMTOOLS_BIN=/path/to/samtools
-export BEDTOOLS=/path/to/bedtools
+export BOWTIE_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie
+export BOWTIE_BUILD_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie-build
 export KMC_TOOLS_BIN=/path/to/kmc_tools
 ```
 
@@ -64,7 +63,7 @@ Chr7B:10025677-10026934
 Chr7B:10038024-10039281
 ```
 
-屏蔽脚本会自动将这些坐标转换为 BED 使用的从 0 开始、左闭右开区间。区域必须完整覆盖每个候选拷贝；如果遗漏某个拷贝区域，其目标序列会错误地残留在背景中。
+这些区域文件用于提取序列。Bowtie 筛选使用下文带 target_id、genome_id 和坐标系统的区域表；应列出每个参考中属于该目标的全部 copy。遗漏目标 copy 会使相关 k-mer 被判为非目标命中。
 
 ### 拷贝分组表
 
@@ -120,40 +119,11 @@ test/TaFT-B1_split_fasta/CS_Chr7B_10013330_10014587.fasta
 
 ## 构建 k-mer 数据库
 
-### 1. 一次性屏蔽所有候选区域
-
-对于每个参考基因组，使用一个包含全部候选拷贝的区域文件：
-
-```bash
-mkdir -p masked_base_genome
-
-bash src/mask_fasta_regions.sh \
-  -g /data/genome/CS.fa \
-  -r regions/CS.all_candidate_copies.txt \
-  -o masked_base_genome/CS.all_candidate_copies_masked.fa
-```
-
-### 2. 构建屏蔽后基础基因组的 KMC 数据库并求并集
+### 为每个候选拷贝分别构建数据库
 
 ```bash
 mkdir -p kmc_batch_db kmc_batch_tmp
-
-kmc -k31 -ci1 -fm -t16 \
-  masked_base_genome/CS.all_candidate_copies_masked.fa \
-  kmc_batch_db/CS.base_masked.k31 kmc_batch_tmp
-
-kmc -k31 -ci1 -fm -t16 \
-  masked_base_genome/JM47.all_candidate_copies_masked.fa \
-  kmc_batch_db/JM47.base_masked.k31 kmc_batch_tmp
-
-bash src/batch_kmc_union.sh \
-  -i kmc_batch_db \
-  -o kmc_batch_db/base_background_all.k31
 ```
-
-`batch_kmc_union.sh` 会读取输入目录中的每一对 `*.kmc_pre`/`*.kmc_suf` 文件，并输出一个 KMC 数据库及其 dump 表 `base_background_all.k31.tsv`。不要将输出数据库放入之后还会再次扫描的输入目录中；或者使用不同的输出前缀，防止同一数据库被重复纳入运算。
-
-### 3. 为每个候选拷贝分别构建数据库
 
 ```bash
 while IFS=$'\t' read -r copy_id sample group fasta; do
@@ -201,28 +171,45 @@ kmc_tools simple \
   intersect target_7B_kmc/TaFTB1_7B.target_shared.k31
 ```
 
-### 非目标拷贝背景与差集运算
+### Bowtie1 批量筛选共有特异性 k-mer
 
-对于多个目标基因，可使用 `build_copy_background.sh`，为每个目标构建“其他所有基因/拷贝的并集 + 基础背景”：
+准备以下三个**制表符分隔**的表（示例中的空格需替换成 Tab）。路径相对于各自清单文件所在目录。每个目标一行，`shared_tsv` 为上述 KMC 交集导出的两列 dump；所有目标使用相同 k。
 
-```bash
-bash src/build_copy_background.sh \
-  -g multi_copy_gene.txt \
-  -d kmer_intersect \
-  -b kmc_batch_db/base_background_all.k31 \
-  -o copy_background_kmc \
-  -t 32
+`targets.tsv`:
+
+```text
+target_id shared_tsv
+TaFTB1_7B target_7B_kmc/TaFTB1_7B.target_shared.k31.tsv
 ```
 
-`kmer_intersect/<gene>/kmc_db/` 必须包含该基因每个拷贝各自的一个 KMC 数据库。对单个目标组执行差集运算时，使用：
+`references.tsv`:
+
+```text
+genome_id fasta index_prefix
+CS /data/genome/CS.fa /data/bowtie_index/CS
+JM47 /data/genome/JM47.fa /data/bowtie_index/JM47
+```
+
+`target_regions.tsv`:
+
+```text
+target_id genome_id reference_name start end coordinate_system
+TaFTB1_7B CS Chr7B 10013330 10014587 1-based-closed
+TaFTB1_7B CS Chr7B 10025677 10026934 1-based-closed
+TaFTB1_7B JM47 Chr7B 20000 21500 1-based-closed
+```
+
+区域坐标仅用于演示，请替换为各参考中全部目标 copy 的实际坐标。支持 `1-based-closed` 和 `0-based-half-open`，染色体名称必须与参考一致；必须提供每个目标×参考的区域。已有完整 Bowtie1 `.ebwt` 或 `.ebwtl` 索引会被复用；缺失时由 `bowtie-build` 自动建立。`index_prefix` 可留空（保留该列 Tab），此时在输出目录中建索引。
 
 ```bash
-bash src/kmc_subtract_dump.sh \
-  --tsv target_7B_kmc/TaFTB1_7B.target_specific.tsv \
-  target_7B_kmc/TaFTB1_7B.target_shared.k31 \
-  copy_background_kmc/TaFTB1_7B.background.k31 \
-  target_7B_kmc/TaFTB1_7B.target_specific.k31
+python3 src/bowtie_shared_specific.py \
+  --targets targets.tsv \
+  --references references.tsv \
+  --regions target_regions.tsv \
+  --out-dir bowtie_specific -t 16
 ```
+
+输出 `bowtie_specific/<target>.shared-specific.tsv`（无表头 `kmer count`，保留输入计数）及 FASTA，可直接进入下述质量过滤。`classification.tsv` 包含每个参考的 `target_only`、`non_target_only`、`mixed`、`unmapped` 状态和保留标志；`<genome>.hits.tsv` 记录每条命中的 0-based half-open 区间和链方向。`summary.tsv` 汇总数量，`SUCCESS` 标志全部参考成功完成；失败目录不可用作最终结果。输出目录必须不存在；用新目录重跑。默认删除成功解析后的 SAM，可用 `--keep-sam` 保留。没有任何命中也会被剔除；多次目标内命中允许保留。旧的屏蔽/背景并集/差集脚本仅保留供旧流程使用，新流程不调用它们。
 
 ### Panel 质量过滤
 
@@ -230,7 +217,7 @@ bash src/kmc_subtract_dump.sh \
 
 ```bash
 python3 src/filter_target_specific_kmers.py \
-  target_7B_kmc/TaFTB1_7B.target_specific.tsv \
+  bowtie_specific/TaFTB1_7B.shared-specific.tsv \
   --out-prefix target_7B_kmc/TaFTB1_7B.panel \
   --anchor-fasta test/TaFT-B1.fasta \
   --min-spacing 10 \
@@ -347,12 +334,13 @@ NB 输入格式、输出列和模型细节以本目录中的 `src/estimate_depth
 | --- | --- |
 | `src/run_miniport.sh` | 为一个材料构建 miniprot 索引并生成 GFF |
 | `src/extract_sequences_by_region.sh` | 按区域提取合并 FASTA 和拆分后的拷贝 FASTA |
-| `src/mask_fasta_regions.sh` | 使用 `N` 屏蔽候选区域 |
+| `src/mask_fasta_regions.sh` | 旧流程：使用 `N` 屏蔽候选区域 |
 | `src/batch_kmc_union.sh` | 对输入目录中的 KMC 数据库求并集 |
 | `src/batch_kmc_inter.sh` | 对输入目录中的 KMC 数据库求交集 |
-| `src/build_copy_background.sh` | 构建非目标拷贝背景和完整背景 |
-| `src/kmc_subtract_dump.sh` | 计算 KMC 差集并导出 TSV |
+| `src/build_copy_background.sh` | 旧流程：构建非目标拷贝背景和完整背景 |
+| `src/kmc_subtract_dump.sh` | 旧流程：计算 KMC 差集并导出 TSV |
 | `src/kmc_inter_dump.sh` | 计算两个 KMC 数据库的交集并导出 TSV |
+| `src/bowtie_shared_specific.py` | Bowtie1 shared-specific panel construction |
 | `src/filter_target_specific_kmers.py` | 过滤 k-mer 并输出 panel TSV/FASTA 文件 |
 | `src/estimate_depth_from_realcount_nb.py` | 估算标记的 NB 参数和联合单拷贝深度 |
 | `src/estimate_copy_from_realcount_depth.sh` | 根据目标计数和单拷贝深度估算整数及连续拷贝数 |
@@ -361,11 +349,9 @@ NB 输入格式、输出列和模型细节以本目录中的 `src/estimate_depth
 
 - 一个 KMC 数据库由 `.kmc_pre` 和 `.kmc_suf` 两个文件组成；移动或复制时必须成对处理。
 - 用于计算目标共有 k-mer 的输入中只能包含当前目标组。不要将所有拷贝数据库直接放入同一个交集运算目录。
-- 基础背景必须来自已经屏蔽所有候选拷贝的基因组。不要直接从完整基因组中减去目标拷贝的 k-mer。
-- 候选拷贝全集 `C_all` 越完整，非目标背景越可靠。未注释的拷贝会增加假特异性 k-mer 的数量。
 - 应使用独立材料或 reads 数据集验证 k-mer panel。低深度样本以及拷贝数估计值接近半整数的样本应标记为低置信度。
 - 本目录中的脚本同时处理候选区域、k-mer panel 构建和 NB 拷贝数估算。
 
 ## 测试数据
 
-`test/TaFT-B1.fasta` 是 `filter_target_specific_kmers.py` 使用的锚定 FASTA，用于在 panel 输出中标注 k-mer 位置并执行 `--min-spacing` 稀疏化。它不是完整的参考基因组，不能作为 `extract_sequences_by_region.sh` 的 `-f` 输入。`test/` 中还包含蛋白质序列、区域列表以及样本/材料列表，可用于检查输入格式。运行流程之前，请确保已安装 `samtools`、`bedtools`、`kmc`、`kmc_tools`、`miniprot`、GNU `awk` 和 Python 包 `scipy`，并根据本地环境调整命令路径。
+`test/TaFT-B1.fasta` 是 `filter_target_specific_kmers.py` 使用的锚定 FASTA，用于在 panel 输出中标注 k-mer 位置并执行 `--min-spacing` 稀疏化。它不是完整的参考基因组，不能作为 `extract_sequences_by_region.sh` 的 `-f` 输入。`test/` 中还包含蛋白质序列、区域列表以及样本/材料列表，可用于检查输入格式。运行流程之前，请确保已安装 `samtools`、`bowtie`、`bowtie-build`、`kmc`、`kmc_tools`、`miniprot`、GNU `awk` 和 Python 包 `scipy`，并根据本地环境调整命令路径。

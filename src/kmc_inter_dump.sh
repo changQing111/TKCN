@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KMC_TOOLS=${KMC_TOOLS:-${KMC_TOOLS_BIN:-kmc_tools}}
+KMC_TOOLS=${KMC_TOOLS:-${KMC_TOOLS_BIN:-/data/changq/bio_soft/KMC3.2.4/bin/kmc_tools}}
 out_tsv=""
 force=0
 

@@ -9,7 +9,7 @@ target_method="mad_filtered_median"
 copy_half_window=""
 copy_call_method=""
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-python_bin=${PYTHON:-python}
+python_bin=${PYTHON:-/data/changq/miniforge3/bin/python}
 nb_helper="$script_dir/estimate_depth_from_realcount_nb.py"
 
 usage() {
