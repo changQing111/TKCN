@@ -1,18 +1,21 @@
 # TKCN
 
-TKCN (Targeted K-mer Copy Number Profiling) estimates copy numbers for duplicated genes or multi-copy gene families using k-mers that are shared by the target copies and specific relative to the background. Using wheat `TaFT-B1` as an example, this document describes the complete workflow: candidate-copy identification, sequence extraction, KMC set operations, and panel construction.
+TKCN (Targeted K-mer Copy Number Profiling) estimates copy numbers for duplicated genes or multi-copy gene families using k-mers shared by the target copies and specific to their genomic regions. Using wheat `TaFT-B1` as an example, the workflow is: candidate-copy identification → sequence extraction → in-memory shared k-mer intersection → Bowtie1 specificity filtering → panel QC → resequencing read counting → copy-number estimation.
 
 ## Method overview
 
 For a target copy group `T`, define:
 
 ```text
-target_shared = intersection of k-mers across every copy in the target group
+K(copy) = set of canonical ACGT k-mers from one copy FASTA
+target_shared = intersection of K(copy) across every copy in the target group
 S(target,j) = shared k-mers with target hits and no off-target hits in reference j
 target_specific = intersection of S(target,j) across all reference genomes
 ```
 
-Map to complete, unmasked references using Bowtie1 `-f -S -v 0 -a`. Every full alignment interval must lie inside one region belonging to the query target. KMC intersections across target copies remain unchanged.
+`shared_kmers_memory.py` enumerates each copy's canonical k-mers (the lexicographically smaller of a sequence and its reverse complement), removes duplicates within each copy, and intersects the sets in memory. It skips windows containing non-ACGT bases. No per-copy KMC databases are needed.
+
+`bowtie_shared_specific.py` combines the shared k-mers from all targets into one FASTA with target identifiers, then maps it once to each complete, unmasked reference using Bowtie1 `-f -S -v 0 -a`. Both strands and all exact hits are considered. In each reference, a retained k-mer must have at least one target hit and no off-target hits; every full alignment interval must fit within one region belonging to that target. Only k-mers passing in every reference form the shared-specific panel. This replaces genome masking, background k-mer unions, and genome set subtraction; reusable Bowtie1 indexes provide the reference search step.
 
 ## Dependencies
 
@@ -23,8 +26,8 @@ The following software is required:
 | `miniprot` | Search for candidate gene copies using protein sequences |
 | `samtools` | Extract FASTA sequences by genomic region |
 | `Bowtie1` (`bowtie`, `bowtie-build`) | Exact all-hit mapping and reference indexing |
-| `KMC3` (`kmc`, `kmc_tools`) | Build k-mer databases and perform set operations |
-| `bash`, `awk`, `python3` | Run helper scripts and filter panels |
+| `KMC3` (`kmc`, `kmc_tools`) | Count resequencing reads and retrieve panel counts; not needed for copy FASTA intersections or Bowtie1 specificity filtering |
+| `bash`, GNU `awk`, `python3`, `SciPy` | Run helper scripts, panel filtering, and NB models; shared-kmer and Bowtie1 scripts use the Python standard library only |
 
 All scripts support `-h/--help`. If a program is not on `PATH`, override its location with environment variables:
 
@@ -53,7 +56,7 @@ Protein-alignment results must be filtered manually or by script: retain hits on
 
 ### Region files
 
-`extract_sequences_by_region.sh` and `mask_fasta_regions.sh` use one region per line in 1-based, closed-coordinate format:
+`extract_sequences_by_region.sh` uses one region per line in 1-based, closed-coordinate format:
 
 ```text
 Chr7B:10013330-10014587
@@ -74,7 +77,7 @@ JM47_Chr7B_copy01 JM47 7B copy_fasta/JM47_Chr7B_copy01.fasta
 CS_Chr7A_copy01 CS 7A copy_fasta/CS_Chr7A_copy01.fasta
 ```
 
-The first line is a header. In the examples below, `group` can instead represent a subgenome, functional class, or haplotype group. Each copy must have its own FASTA file and KMC database; do not build one database by combining different copies.
+The first line is a header. In the examples below, `group` can instead represent a subgenome, functional class, or haplotype group. Each copy must have its own FASTA file containing exactly one nonempty sequence record. These files are the direct inputs to the in-memory intersection.
 
 ## Quick start: identify candidate copies
 
@@ -115,69 +118,48 @@ test/TaFT-B1_split_fasta/CS_Chr7B_10013330_10014587.fasta
 
 Add the paths of these split FASTA files to `all_candidate_copy_list.tsv`.
 
-## Build k-mer databases
-
-### Build one database for each candidate copy
-
-```bash
-mkdir -p kmc_batch_db kmc_batch_tmp
-```
-
-```bash
-while IFS=$'\t' read -r copy_id sample group fasta; do
-  [[ -z "$copy_id" || "$copy_id" == "copy_id" || "$copy_id" == \#* ]] && continue
-  kmc -k31 -ci1 -fm -t8 "$fasta" \
-    "kmc_batch_db/${copy_id}.k31" kmc_batch_tmp
-done < all_candidate_copy_list.tsv
-```
-
 ## Build a target-specific panel
 
-### Target shared k-mers
+### Target shared k-mers in memory
 
-Select the copy databases for the target group and calculate their intersection:
-
-```bash
-mkdir -p target_7B_kmc
-awk -v group=7B 'NR > 1 && $3 == group {print $1}' \
-  all_candidate_copy_list.tsv > target_7B_kmc/copies.list
-
-mkdir -p target_7B_kmc/input
-while read -r copy_id; do
-  ln -sf "../../kmc_batch_db/${copy_id}.k31.kmc_pre" \
-    "target_7B_kmc/input/${copy_id}.k31.kmc_pre"
-  ln -sf "../../kmc_batch_db/${copy_id}.k31.kmc_suf" \
-    "target_7B_kmc/input/${copy_id}.k31.kmc_suf"
-done < target_7B_kmc/copies.list
-
-bash src/batch_kmc_inter.sh \
-  -i target_7B_kmc/input \
-  -o target_7B_kmc/TaFTB1_7B.target_shared.k31
-```
-
-`batch_kmc_inter.sh` intersects all KMC databases in the input directory. Therefore, first create an input directory containing only the current target group. Alternatively, calculate the intersection explicitly in steps with `kmc_tools`:
+Collect only the target group's copy FASTAs in one directory, then run `shared_kmers_memory.py`. In this example, manifest paths are relative to the `TKCN/` working directory; `readlink -f` makes symlink sources absolute:
 
 ```bash
-kmc_tools simple \
-  kmc_batch_db/CS_Chr7B_copy01.k31 \
-  kmc_batch_db/JM47_Chr7B_copy01.k31 \
-  intersect target_7B_kmc/step1.k31
+mkdir -p target_7B/input
+while IFS=$'\t' read -r copy_id sample group fasta; do
+  [[ -z "$copy_id" || "$copy_id" == "copy_id" || "$copy_id" == \#* ]] && continue
+  [[ "$group" == "7B" ]] || continue
+  ln -s "$(readlink -f "$fasta")" "target_7B/input/${copy_id}.fasta"
+done < all_candidate_copy_list.tsv
 
-kmc_tools simple \
-  target_7B_kmc/step1.k31 \
-  kmc_batch_db/S4185_Chr7B_copy01.k31 \
-  intersect target_7B_kmc/TaFTB1_7B.target_shared.k31
+python3 src/shared_kmers_memory.py \
+  --input-dir target_7B/input \
+  --pattern '*.fasta' \
+  --target-id TaFTB1_7B \
+  -k 31 \
+  --out-dir target_7B/shared
 ```
+
+`--pattern` is a nonrecursive glob (`*.fasta` by default); each matching file must contain one copy at least `k` bases long. Use a fresh input directory for each target and a new output directory for each run. Repeat this step separately for other targets, always using the same `k` before joint Bowtie1 filtering. Memory use depends on the unique k-mer sets of individual copies and their running intersection, rather than whole-genome k-mer databases.
+
+```text
+target_7B/shared/TaFTB1_7B_shared.k31.tsv  Headerless kmer/count table, count always 1
+target_7B/shared/TaFTB1_7B_shared.k31.fa   Shared canonical k-mers in FASTA format
+target_7B/shared/per_copy.tsv             Per-copy sizes, skipped windows, running intersection
+target_7B/shared/report.json              Input paths/hashes, k, copy count, timing and peak RSS
+```
+
+The TSV count is a presence indicator, not within-copy multiplicity or resequencing depth. Empty intersections produce empty TSV/FASTA files; inspect the reports before proceeding. The TSV is directly compatible with the Bowtie1 script's two-column input format, so no KMC database or dump conversion is required.
 
 ### Batch shared-specific filtering with Bowtie1
 
-Prepare three **tab-separated** tables (replace displayed spaces with tabs). Paths are relative to each manifest directory. Supply one row per target and the two-column KMC intersection dump; all targets must use the same k.
+Prepare three **tab-separated** tables (replace displayed spaces with tabs). Paths are relative to each manifest directory. Supply one row per target and the two-column TSV from `shared_kmers_memory.py`; all targets must use the same k. The script generates `all_targets.shared.fa` automatically from these TSVs; do not concatenate FASTAs manually.
 
 `targets.tsv`:
 
 ```text
 target_id shared_tsv
-TaFTB1_7B target_7B_kmc/TaFTB1_7B.target_shared.k31.tsv
+TaFTB1_7B target_7B/shared/TaFTB1_7B_shared.k31.tsv
 ```
 
 `references.tsv`:
@@ -211,12 +193,12 @@ Outputs are `bowtie_specific/<target>.shared-specific.tsv` (headerless `kmer cou
 
 ### Panel quality filtering
 
-Filter the KMC dump table into a TSV and FASTA panel suitable for read counting:
+Filter the Bowtie1 shared-specific TSV into a TSV and FASTA panel suitable for read counting:
 
 ```bash
 python3 src/filter_target_specific_kmers.py \
   bowtie_specific/TaFTB1_7B.shared-specific.tsv \
-  --out-prefix target_7B_kmc/TaFTB1_7B.panel \
+  --out-prefix target_7B/TaFTB1_7B.panel \
   --anchor-fasta test/TaFT-B1.fasta \
   --min-spacing 10 \
   --id-prefix TaFTB1_7B
@@ -241,28 +223,32 @@ single_copy_gene_kmer_num/<marker>/*.realcount.tsv
 multi_copy_gene_kmer_num/TaFT-B1_copy_num/*.realcount.tsv
 ```
 
-Each count table must contain at least `kmer` and `count` columns. The sample name in each filename becomes the output `sample`. Example KMC read counting:
+Each count table must be a headerless KMC dump with at least two columns (`kmer`, numeric `count`). The sample name in each filename becomes the output `sample`. Example KMC read counting:
 
 ```bash
-mkdir -p sample_kmc sample_count
+mkdir -p sample_kmc sample_count kmc_tmp
+
+kmc -k31 -ci1 -cs255 -fm -t4 \
+  target_7B/TaFTB1_7B.panel.fa \
+  target_7B/TaFTB1_7B.panel.k31 kmc_tmp
 
 printf '%s\n' sample_R1.fastq.gz sample_R2.fastq.gz > sample.reads.list
 
-kmc -k31 -ci1 -fq -t16 \
+kmc -k31 -ci1 -cs1000000000 -fq -t16 \
   @sample.reads.list \
   sample_kmc/sample.k31 kmc_tmp
 
 kmc_tools simple \
   sample_kmc/sample.k31 \
-  target_7B_kmc/TaFTB1_7B.panel.repeat10000.k31 \
+  target_7B/TaFTB1_7B.panel.k31 \
   intersect \
-  sample_kmc/sample.target.k31
+  sample_kmc/sample.target.k31 -ocleft -cs1000000000
 
 kmc_tools transform sample_kmc/sample.target.k31 dump -s \
   sample_count/sample.TaFT-B1.realcount.tsv
 ```
 
-`TaFTB1_7B.panel.repeat10000.k31` must be built from a panel FASTA repeated enough times that the repeat count exceeds the expected read k-mer depth; otherwise, genuine counts will not be retained in the KMC intersection.
+Here KMC is used for read counting, after the copy FASTA intersection and Bowtie1 filtering. Keep the reads database on the left and use `-ocleft` to retain its counts; the default minimum rule would cap counts at the panel multiplicity. No repeated panel FASTA is needed. Use the same canonical `k=31` convention throughout and sufficient counter capacity; earlier filtering or count saturation cannot be recovered. The dump is headerless; for a complete panel count table, add absent panel k-mers with count zero when the reads database preserves singleton counts (`-ci1`).
 
 If the project already has a read-counting workflow, you can use its generated `*.realcount.tsv` files directly instead of counting again.
 
@@ -286,7 +272,7 @@ python3 src/estimate_depth_from_realcount_nb.py joint \
   > ../single_copy_gene_kmer_num/single_copy_depth_nb_joint.tsv
 ```
 
-`nb_depth_estimate` in `single_copy_depth_nb_joint.tsv` is the one-copy reference used for subsequent copy-number estimation. For marker input-directory layout and optional parameters, see `../docs/nb-copy-number-estimation-method.md`.
+`nb_depth_estimate` in `single_copy_depth_nb_joint.tsv` is the one-copy reference used for subsequent copy-number estimation.
 
 ### 2. Estimate target-gene copy number with NB models
 
@@ -324,7 +310,7 @@ bash src/estimate_copy_from_realcount_depth.sh \
 
 For example, `--copy-half-window 0.1` labels values near `2.40-2.60` as `ambiguous_half_integer`, with `copy_call` set to `NA`. The forced-call output is recommended for the primary analysis; use the ambiguous-call output for sensitivity checks and low-confidence annotations.
 
-For NB input formats, output columns, and model details, see `../docs/nb-copy-number-estimation-method.md`. The root-level scripts documented there have identically named entry points in `TKCN/src`; these call the project's shared implementation to prevent divergence between two algorithms.
+For NB input formats, output columns, and model details, consult `src/estimate_depth_from_realcount_nb.py` and `src/estimate_copy_from_realcount_depth.sh --help`; these are self-contained implementations in this repository.
 
 ## Script index
 
@@ -333,8 +319,9 @@ For NB input formats, output columns, and model details, see `../docs/nb-copy-nu
 | `src/run_miniport.sh` | Build a miniprot index and generate a GFF for one accession |
 | `src/extract_sequences_by_region.sh` | Extract a combined FASTA and split copy FASTA files by region |
 | `src/mask_fasta_regions.sh` | Legacy: Mask candidate regions with `N` |
-| `src/batch_kmc_union.sh` | Take the union of KMC databases in an input directory |
-| `src/batch_kmc_inter.sh` | Take the intersection of KMC databases in an input directory |
+| `src/batch_kmc_union.sh` | Legacy: Take the union of KMC databases in an input directory |
+| `src/batch_kmc_inter.sh` | Legacy: Take the intersection of per-copy KMC databases |
+| `src/shared_kmers_memory.py` | Intersect canonical k-mer sets directly from individual copy FASTAs in memory |
 | `src/build_copy_background.sh` | Legacy: Build the non-target-copy background and complete background |
 | `src/kmc_subtract_dump.sh` | Legacy: Calculate a KMC set difference and export a TSV |
 | `src/bowtie_shared_specific.py` | Bowtie1 shared-specific panel construction |
@@ -345,9 +332,9 @@ For NB input formats, output columns, and model details, see `../docs/nb-copy-nu
 ## Notes
 
 - A KMC database consists of `.kmc_pre` and `.kmc_suf` files; always move or copy them together.
-- The input for target shared k-mers must contain only the current target group. Do not put all copy databases directly in one intersection directory.
+- The input for target shared k-mers must contain only the current target group, with one record per copy FASTA. Do not mix other targets into the same input directory.
 - Validate k-mer panels using independent accessions or read datasets. Flag low-depth samples and copy estimates near half-integers as low confidence.
-- The scripts in this directory handle candidate regions and k-mer-panel construction only. NB copy-number statistics scripts and tests are located in the repository root.
+- The scripts in this directory cover candidate regions, k-mer-panel construction, and NB copy-number estimation. Generated `panels/` data are kept locally and excluded from Git.
 
 ## Test data
 
