@@ -26,8 +26,9 @@ The following software is required:
 | `miniprot` | Search for candidate gene copies using protein sequences |
 | `samtools` | Extract FASTA sequences by genomic region |
 | `Bowtie1` (`bowtie`, `bowtie-build`) | Exact all-hit mapping and reference indexing |
-| `KMC3` (`kmc`, `kmc_tools`) | Count resequencing reads and retrieve panel counts; not needed for copy FASTA intersections or Bowtie1 specificity filtering |
-| `bash`, GNU `awk`, `python3`, `SciPy` | Run helper scripts, panel filtering, and NB models; shared-kmer and Bowtie1 scripts use the Python standard library only |
+| `KMC3` (`kmc`) | Build canonical 31-mer databases from resequencing reads (`kmc_tools` is only needed for legacy intersection/subtraction scripts) |
+| `query_mmap` (`src/query_mmap/build.sh`, C++14 `g++`) | Fast read-only `mmap` lookup of panel 31-mers directly against sample KMC databases without building panel KMC databases or scanning whole `.kmc_suf` files |
+| `bash`, GNU `awk`, `python3`, `SciPy` | Run helper scripts, panel filtering, `query_mmap` wrapper, and NB models; shared-kmer, Bowtie1, and `query_panel_kmc_mmap.py` scripts use the Python standard library only |
 
 All scripts support `-h/--help`. If a program is not on `PATH`, override its location with environment variables:
 
@@ -36,6 +37,7 @@ export MINIPROT_BIN=/path/to/miniprot
 export SAMTOOLS_BIN=/path/to/samtools
 export BOWTIE_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie
 export BOWTIE_BUILD_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie-build
+export QUERY_MMAP_BIN=/path/to/query_mmap
 export KMC_TOOLS_BIN=/path/to/kmc_tools
 ```
 
@@ -223,14 +225,18 @@ single_copy_gene_kmer_num/<marker>/*.realcount.tsv
 multi_copy_gene_kmer_num/TaFT-B1_copy_num/*.realcount.tsv
 ```
 
-Each count table must be a headerless KMC dump with at least two columns (`kmer`, numeric `count`). The sample name in each filename becomes the output `sample`. Example KMC read counting:
+Each count table must be a headerless two-column TSV (`kmer`, numeric `count`). The sample name in each filename becomes the output `sample`.
+
+First build `query_mmap` once (or point `QUERY_MMAP_BIN` / `--query-mmap` to an existing `query_mmap` binary):
+
+```bash
+bash src/query_mmap/build.sh
+```
+
+Then build a canonical 31-mer KMC database for each resequencing sample (or reuse existing sample KMC databases) and query the panel FASTA directly via read-only `mmap`:
 
 ```bash
 mkdir -p sample_kmc sample_count kmc_tmp
-
-kmc -k31 -ci1 -cs255 -fm -t4 \
-  target_7B/TaFTB1_7B.panel.fa \
-  target_7B/TaFTB1_7B.panel.k31 kmc_tmp
 
 printf '%s\n' sample_R1.fastq.gz sample_R2.fastq.gz > sample.reads.list
 
@@ -238,17 +244,35 @@ kmc -k31 -ci1 -cs1000000000 -fq -t16 \
   @sample.reads.list \
   sample_kmc/sample.k31 kmc_tmp
 
-kmc_tools simple \
-  sample_kmc/sample.k31 \
-  target_7B/TaFTB1_7B.panel.k31 \
-  intersect \
-  sample_kmc/sample.target.k31 -ocleft -cs1000000000
-
-kmc_tools transform sample_kmc/sample.target.k31 dump -s \
-  sample_count/sample.TaFT-B1.realcount.tsv
+python3 src/query_panel_kmc_mmap.py \
+  --db sample_kmc/sample.k31 \
+  --panel target_7B/TaFTB1_7B.panel.fa \
+  --out sample_count/sample.TaFT-B1.realcount.tsv
 ```
 
-Here KMC is used for read counting, after the copy FASTA intersection and Bowtie1 filtering. Keep the reads database on the left and use `-ocleft` to retain its counts; the default minimum rule would cap counts at the panel multiplicity. No repeated panel FASTA is needed. Use the same canonical `k=31` convention throughout and sufficient counter capacity; earlier filtering or count saturation cannot be recovered. The dump is headerless; for a complete panel count table, add absent panel k-mers with count zero when the reads database preserves singleton counts (`-ci1`).
+For multiple samples or a joint panel (e.g. `all_panels.k31.fa` with `membership.tsv`), query each sample database once in parallel and split directly into per-gene count tables:
+
+```bash
+# Batch query for one panel
+python3 src/query_panel_kmc_mmap.py \
+  --db-dir sample_kmc \
+  --panel target_7B/TaFTB1_7B.panel.fa \
+  --out-dir sample_count \
+  --workers 4
+
+# Batch query for a joint panel, split into <out-dir>/<role>/<gene_id>/<sample>.realcount.tsv
+python3 src/query_panel_kmc_mmap.py \
+  --db-dir sample_kmc \
+  --panel panels/joint_single5_multi_all/all_panels.k31.fa \
+  --membership panels/joint_single5_multi_all/membership.tsv \
+  --split-by-role \
+  --out-dir sample_count_split \
+  --workers 4
+```
+
+`query_mmap` uses the official KMC 3.2.4 C++ API lookup with read-only `mmap` (`MADV_RANDOM`) on `.kmc_suf`, touching only the suffix pages needed for the panel k-mers rather than scanning the entire reads KMC database. Building `TaFTB1_7B.panel.k31` and intersecting into `sample.target.k31` via `kmc_tools simple intersect` is no longer needed (`src/kmc_inter_dump.sh` and `src/kmc_inter_dump.slurm` remain for legacy KMC-to-KMC intersection only).
+
+By default, `query_panel_kmc_mmap.py` outputs all panel k-mers (including absent k-mers with count `0`) sorted by canonical 31-mer, and emits warnings if the sample database has `stored_min_count > 1` (where `0` means `< stored_min_count`, not necessarily zero reads) or counter saturation. Pass `--nonzero-only` if you need exact legacy `kmc_tools simple intersect -ocleft` + `dump -s` behavior (omitting count-0 k-mers), or `--raw-out` / `--save-raw` to retain the 5-column `query_mmap` output (`kmer_id`, `sequence`, `stored_count`, `stored_min_count`, `counter_bytes`). Use canonical `k=31` and sufficient counter capacity (`-cs1000000000`) when building sample KMC databases; earlier filtering or count saturation cannot be recovered.
 
 If the project already has a read-counting workflow, you can use its generated `*.realcount.tsv` files directly instead of counting again.
 
@@ -324,8 +348,11 @@ For NB input formats, output columns, and model details, consult `src/estimate_d
 | `src/shared_kmers_memory.py` | Intersect canonical k-mer sets directly from individual copy FASTAs in memory |
 | `src/build_copy_background.sh` | Legacy: Build the non-target-copy background and complete background |
 | `src/kmc_subtract_dump.sh` | Legacy: Calculate a KMC set difference and export a TSV |
+| `src/kmc_inter_dump.sh` | Legacy: Calculate a KMC database intersection and export a TSV |
 | `src/bowtie_shared_specific.py` | Bowtie1 shared-specific panel construction |
 | `src/filter_target_specific_kmers.py` | Filter k-mers and write panel TSV/FASTA files |
+| `src/query_mmap/build.sh` | Patch official KMC 3.2.4 API for read-only `mmap` suffix access and compile `query_mmap` |
+| `src/query_panel_kmc_mmap.py` | Fast `query_mmap` panel lookup against single or batch sample KMC databases (with optional joint-panel membership splitting) |
 | `src/estimate_depth_from_realcount_nb.py` | Estimate marker NB parameters and joint single-copy depth |
 | `src/estimate_copy_from_realcount_depth.sh` | Estimate integer and continuous copy numbers from target counts and single-copy depth |
 
@@ -338,4 +365,4 @@ For NB input formats, output columns, and model details, consult `src/estimate_d
 
 ## Test data
 
-`test/TaFT-B1.fasta` is the anchor FASTA used by `filter_target_specific_kmers.py` to annotate k-mer positions in panel output and to apply `--min-spacing` thinning. It is not a complete reference genome and cannot be used as the `-f` input to `extract_sequences_by_region.sh`. `test/` also contains protein sequences, region lists, and sample/accession lists that can be used to check input formats. Before running the workflow, ensure that `samtools`, `bowtie`, `bowtie-build`, `kmc`, `kmc_tools`, and `miniprot` are installed, and adjust commands for local paths as needed.
+`test/TaFT-B1.fasta` is the anchor FASTA used by `filter_target_specific_kmers.py` to annotate k-mer positions in panel output and to apply `--min-spacing` thinning. It is not a complete reference genome and cannot be used as the `-f` input to `extract_sequences_by_region.sh`. `test/` also contains protein sequences, region lists, and sample/accession lists that can be used to check input formats. Before running the workflow, ensure that `samtools`, `bowtie`, `bowtie-build`, `kmc`, `miniprot`, and `query_mmap` (built via `bash src/query_mmap/build.sh` or set via `QUERY_MMAP_BIN`) are installed, and adjust commands for local paths as needed.

@@ -1,0 +1,73 @@
+--- official/kmc_file.h
++++ mmap/kmc_file.h
+@@ -95,6 +95,9 @@
+ 		}
+ 	};
+ protected:
++	void* suffix_mapping = nullptr;
++	size_t suffix_mapping_size = 0;
++	void ReleaseSuffix();
+ 	enum open_mode {closed, opened_for_RA, opened_for_listing};
+ 	open_mode is_opened;
+ 	uint64 suf_file_left_to_read = 0; // number of bytes that are yet to read in a listing mode
+--- official/kmc_file.cpp
++++ mmap/kmc_file.cpp
+@@ -11,6 +11,9 @@
+ #include "mmer.h"
+ #include "kmc_file.h"
+ #include <tuple>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <stdexcept>
+ 
+ 
+ uint64 CKMCFile::part_size = 1 << 25;
+@@ -38,10 +41,11 @@
+ 	if (!OpenASingleFile(file_name + ".kmc_suf", file_suf, size, (char *)"KMCS"))
+ 		return false;
+ 
+-	sufix_file_buf = new uchar[size];
+-	result = fread(sufix_file_buf, 1, size, file_suf);
+-	if (result != size)
+-		return false;
++	suffix_mapping_size = size + 8;
++	suffix_mapping = mmap(nullptr, suffix_mapping_size, PROT_READ, MAP_PRIVATE, fileno(file_suf), 0);
++	if (suffix_mapping == MAP_FAILED) { suffix_mapping = nullptr; return false; }
++	madvise(suffix_mapping, suffix_mapping_size, MADV_RANDOM);
++	sufix_file_buf = static_cast<uchar*>(suffix_mapping) + 4;
+ 
+ 	fclose(file_suf);
+ 	file_suf = NULL;
+@@ -120,8 +124,7 @@
+ 		fclose(file_suf);
+ 	if (prefix_file_buf)
+ 		delete[] prefix_file_buf;
+-	if (sufix_file_buf)
+-		delete[] sufix_file_buf;
++	ReleaseSuffix();
+ 	if (signature_map)
+ 		delete[] signature_map;
+ }
+@@ -616,8 +619,7 @@
+ 		end_of_file = false;
+ 		delete [] prefix_file_buf;
+ 		prefix_file_buf = NULL;
+-		delete [] sufix_file_buf;
+-		sufix_file_buf = NULL;
++		ReleaseSuffix();
+ 		delete[] signature_map;
+ 		signature_map = NULL;
+ 
+@@ -1400,3 +1402,12 @@
+ 
+ 
+ // ***** EOF
++
++void CKMCFile::ReleaseSuffix() {
++    if (suffix_mapping) {
++        munmap(suffix_mapping, suffix_mapping_size);
++        suffix_mapping = nullptr;
++        suffix_mapping_size = 0;
++    } else if (sufix_file_buf) { delete[] sufix_file_buf; }
++    sufix_file_buf = nullptr;
++}

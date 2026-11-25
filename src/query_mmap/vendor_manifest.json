@@ -1,0 +1,30 @@
+{
+  "kmc_file.h": {
+    "sha256": "20fde8ad1c52e664cee8027451aff4a961ee896c972b4df2515f0fee6eec71b3",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "kmer_api.cpp": {
+    "sha256": "f331293c54b2b173f758cc9e24babb206b55ea09de3522cd5d22c1be6011ba6c",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "kmer_api.h": {
+    "sha256": "9a2932edc112690b2d54f7fa6a9d6bdb253b0425ec3e1635903bc18190e0cfbd",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "mmer.h": {
+    "sha256": "89962f5a2f44f156061f818dd14247c0c4acd864edd0185f7990f1357bebe0b3",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "mmer.cpp": {
+    "sha256": "bdd3e97836ff1ec0f347c5756d9af4dfaa57d84271e116561c14245631bedf98",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "kmc_file.cpp": {
+    "sha256": "2aaba6c46de5e4ef46f5a199703f628cabc843a0568bdf1c019d197202376f38",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  },
+  "kmer_defs.h": {
+    "sha256": "e5b29be89e2b2d9e091a4149e3d65affff2dae222667d2dc4b424eba442d2a92",
+    "source": "https://github.com/refresh-bio/KMC/tree/v3.2.4/kmc_api"
+  }
+}

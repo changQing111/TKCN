@@ -84,7 +84,7 @@ def build(manifest, output, k):
     write_table('cross_gene_overlap.tsv', ['panel_id', 'kmer', 'gene_ids'],
                 ((ids[s], s, ','.join(sorted(g for g, _ in members[s]))) for s in sorted(members) if len(members[s]) > 1))
     metadata = dict(k=k, unique_kmers=len(members), cross_gene_shared_kmers=sum(len(v)>1 for v in members.values()), inputs=provenance,
-                    policy='No additional sequence-quality filtering; canonicalize and deduplicate only. Use reads database as left input with intersect -ocleft.')
+                    policy='No additional sequence-quality filtering; canonicalize and deduplicate only. Query reads databases with src/query_panel_kmc_mmap.py (query_mmap); for legacy kmc_tools, use reads database as left input with intersect -ocleft.')
     (output / 'provenance.json').write_text(json.dumps(metadata, indent=2) + '\n')
     print(json.dumps({key: metadata[key] for key in ('k', 'unique_kmers', 'cross_gene_shared_kmers')}))
 

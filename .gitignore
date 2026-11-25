@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 /panels/
+src/query_mmap/query_mmap
+src/query_mmap/mmap_api/
+src/query_mmap/kmc_api

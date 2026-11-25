@@ -28,8 +28,9 @@ target_specific = 所有参考基因组 S(target,j) 的交集
 | `miniprot` | 使用蛋白质序列搜索候选基因拷贝 |
 | `samtools` | 按基因组区域提取 FASTA 序列 |
 | `Bowtie1` (`bowtie`, `bowtie-build`) | 全命中精确比对和参考索引 |
-| `KMC3`（`kmc`、`kmc_tools`） | 统计重测序 reads 并提取 panel 计数；copy FASTA 交集及 Bowtie1 特异性筛选无需 KMC |
-| `bash`、GNU `awk`、`python3`、`SciPy` | 运行辅助脚本、NB 模型和 panel 过滤；内存交集与 Bowtie1 脚本仅使用 Python 标准库 |
+| `KMC3`（`kmc`） | 为重测序 reads 构建 canonical 31-mer 数据库（panel 查询已替换为 `query_mmap`；`kmc_tools` 仅用于旧版交集/差集脚本） |
+| `query_mmap`（`src/query_mmap/build.sh`、C++14 `g++`） | 基于只读 `mmap` 直接在样本 KMC 数据库中快速查询 panel 31-mer，无需构建 panel KMC 库或全盘扫描 `.kmc_suf` |
+| `bash`、GNU `awk`、`python3`、`SciPy` | 运行辅助脚本、NB 模型、panel 过滤和 `query_mmap` 封装；内存交集、Bowtie1 与 `query_panel_kmc_mmap.py` 仅使用 Python 标准库 |
 
 所有脚本均支持 `-h/--help`。如果程序不在 `PATH` 中，可通过环境变量指定其位置：
 
@@ -38,6 +39,7 @@ export MINIPROT_BIN=/path/to/miniprot
 export SAMTOOLS_BIN=/path/to/samtools
 export BOWTIE_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie
 export BOWTIE_BUILD_BIN=/home/changq/my_data/bio_soft/bowtie-1.3.1-linux-x86_64/bowtie-build
+export QUERY_MMAP_BIN=/path/to/query_mmap
 export KMC_TOOLS_BIN=/path/to/kmc_tools
 ```
 
@@ -225,14 +227,18 @@ single_copy_gene_kmer_num/<marker>/*.realcount.tsv
 multi_copy_gene_kmer_num/TaFT-B1_copy_num/*.realcount.tsv
 ```
 
-每个计数表应为无表头的 KMC dump TSV，至少包含两列，第二列为数值型 `count`；文件名中的样本名称将成为输出中的 `sample`。下面是使用 KMC 统计 reads 的示例：
+每个计数表应为无表头的两列 TSV（`kmer`、数值型 `count`）；文件名中的样本名称将成为输出中的 `sample`。
+
+首先编译一次 `query_mmap`（或通过 `QUERY_MMAP_BIN` / `--query-mmap` 指定已有的 `query_mmap` 可执行文件）：
+
+```bash
+bash src/query_mmap/build.sh
+```
+
+随后为每个重测序样本构建 canonical 31-mer KMC 数据库（或直接复用已有样本 KMC 库），并使用只读 `mmap` 直接查询 panel FASTA：
 
 ```bash
 mkdir -p sample_kmc sample_count kmc_tmp
-
-kmc -k31 -ci1 -cs255 -fm -t4 \
-  target_7B/TaFTB1_7B.panel.fa \
-  target_7B/TaFTB1_7B.panel.k31 kmc_tmp
 
 printf '%s\n' sample_R1.fastq.gz sample_R2.fastq.gz > sample.reads.list
 
@@ -240,17 +246,35 @@ kmc -k31 -ci1 -cs1000000000 -fq -t16 \
   @sample.reads.list \
   sample_kmc/sample.k31 kmc_tmp
 
-kmc_tools simple \
-  sample_kmc/sample.k31 \
-  target_7B/TaFTB1_7B.panel.k31 \
-  intersect \
-  sample_kmc/sample.target.k31 -ocleft -cs1000000000
-
-kmc_tools transform sample_kmc/sample.target.k31 dump -s \
-  sample_count/sample.TaFT-B1.realcount.tsv
+python3 src/query_panel_kmc_mmap.py \
+  --db sample_kmc/sample.k31 \
+  --panel target_7B/TaFTB1_7B.panel.fa \
+  --out sample_count/sample.TaFT-B1.realcount.tsv
 ```
 
-此处 KMC 用于 copy FASTA 交集和 Bowtie1 筛选完成后的 reads 计数。必须将 reads 数据库放在左侧，并用 `-ocleft` 保留其计数；默认的最小值规则会将计数限制为 panel 中的出现次数，无需再重复 panel FASTA。所有步骤应使用相同的 canonical `k=31`，并设置足够的计数容量；先前过滤或计数饱和造成的损失无法恢复。dump 无表头；需要完整 panel 计数表时，在 reads 数据库保留 singleton（`-ci1`）的前提下，将未出现的 panel k-mer 补为零。
+对于多样本批量查询或联合 panel（如 `all_panels.k31.fa` 与 `membership.tsv`），可并行对每个样本库仅查询一次并直接拆分为逐基因计数表：
+
+```bash
+# 单 panel 批量查询
+python3 src/query_panel_kmc_mmap.py \
+  --db-dir sample_kmc \
+  --panel target_7B/TaFTB1_7B.panel.fa \
+  --out-dir sample_count \
+  --workers 4
+
+# 联合 panel 批量查询，并按 <out-dir>/<role>/<gene_id>/<sample>.realcount.tsv 拆分
+python3 src/query_panel_kmc_mmap.py \
+  --db-dir sample_kmc \
+  --panel panels/joint_single5_multi_all/all_panels.k31.fa \
+  --membership panels/joint_single5_multi_all/membership.tsv \
+  --split-by-role \
+  --out-dir sample_count_split \
+  --workers 4
+```
+
+`query_mmap` 复用官方 KMC 3.2.4 C++ API 的签名、前缀表和二分查找逻辑，仅将后缀数组改为 Linux 只读 `mmap`（`MADV_RANDOM`），查询时只触及 panel k-mer 对应的少数页面，无需整库扫描或构建中间的 `TaFTB1_7B.panel.k31` 与 `sample.target.k31` 数据库（`src/kmc_inter_dump.sh` 与 `src/kmc_inter_dump.slurm` 仅保留供旧版 KMC 交集流程使用）。
+
+默认情况下，`query_panel_kmc_mmap.py` 会输出完整 panel 的 canonical 31-mer 计数（包含未检出的 `0` 计数，按 canonical k-mer 字典序排序），并在样本库存在 `stored_min_count > 1`（例如 `-ci2`，此时 `0` 表示 `< stored_min_count` 而非严格为 0）或计数触及 `counter_bytes` 上限时自动告警。如需与旧版 `kmc_tools simple intersect -ocleft` + `dump -s` 完全一致（跳过计数为 0 的 k-mer），可添加 `--nonzero-only`；如需保留 5 列原始 `query_mmap` 输出（`kmer_id`、`sequence`、`stored_count`、`stored_min_count`、`counter_bytes`），可使用 `--raw-out` 或 `--save-raw`。构建样本 KMC 数据库时应使用 canonical `k=31` 并设置足够的计数容量（`-cs1000000000`）；先前过滤或计数饱和造成的损失无法恢复。
 
 如果项目已有 reads 计数流程，可直接使用其生成的 `*.realcount.tsv` 文件，无需再次计数。
 
@@ -326,9 +350,11 @@ NB 输入格式、输出列和模型细节以本目录中的 `src/estimate_depth
 | `src/shared_kmers_memory.py` | 直接从独立 copy FASTA 在内存中求 canonical k-mer 交集 |
 | `src/build_copy_background.sh` | 旧流程：构建非目标拷贝背景和完整背景 |
 | `src/kmc_subtract_dump.sh` | 旧流程：计算 KMC 差集并导出 TSV |
-| `src/kmc_inter_dump.sh` | 计算两个 KMC 数据库的交集并导出 TSV |
+| `src/kmc_inter_dump.sh` | 旧流程：计算两个 KMC 数据库的交集并导出 TSV |
 | `src/bowtie_shared_specific.py` | Bowtie1 全部精确命中、区域筛选及跨参考交集，构建 shared-specific panel |
 | `src/filter_target_specific_kmers.py` | 过滤 k-mer 并输出 panel TSV/FASTA 文件 |
+| `src/query_mmap/build.sh` | 对官方 KMC 3.2.4 API 应用只读 `mmap` 补丁并编译 `query_mmap` |
+| `src/query_panel_kmc_mmap.py` | 基于 `query_mmap` 快速查询单样本/批量 KMC 数据库并输出 `*.realcount.tsv`（支持联合 panel 按 membership 拆分） |
 | `src/estimate_depth_from_realcount_nb.py` | 估算标记的 NB 参数和联合单拷贝深度 |
 | `src/estimate_copy_from_realcount_depth.sh` | 根据目标计数和单拷贝深度估算整数及连续拷贝数 |
 
@@ -341,4 +367,4 @@ NB 输入格式、输出列和模型细节以本目录中的 `src/estimate_depth
 
 ## 测试数据
 
-`test/TaFT-B1.fasta` 是 `filter_target_specific_kmers.py` 使用的锚定 FASTA，用于在 panel 输出中标注 k-mer 位置并执行 `--min-spacing` 稀疏化。它不是完整的参考基因组，不能作为 `extract_sequences_by_region.sh` 的 `-f` 输入。`test/` 中还包含蛋白质序列、区域列表以及样本/材料列表，可用于检查输入格式。运行流程之前，请确保已安装 `samtools`、`bowtie`、`bowtie-build`、`kmc`、`kmc_tools`、`miniprot`、GNU `awk` 和 Python 包 `scipy`，并根据本地环境调整命令路径。
+`test/TaFT-B1.fasta` 是 `filter_target_specific_kmers.py` 使用的锚定 FASTA，用于在 panel 输出中标注 k-mer 位置并执行 `--min-spacing` 稀疏化。它不是完整的参考基因组，不能作为 `extract_sequences_by_region.sh` 的 `-f` 输入。`test/` 中还包含蛋白质序列、区域列表以及样本/材料列表，可用于检查输入格式。运行流程之前，请确保已安装 `samtools`、`bowtie`、`bowtie-build`、`kmc`、`miniprot`、GNU `awk`、Python 包 `scipy` 以及 `query_mmap`（通过 `bash src/query_mmap/build.sh` 编译或通过 `QUERY_MMAP_BIN` 指定），并根据本地环境调整命令路径。
